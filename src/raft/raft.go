@@ -187,7 +187,7 @@ type TermUpdateSub struct {
 	firstTerm int
 }
 
-func termTracker(termUpdateSub <-chan TermUpdateSub, getTerm chan<- int, setTerm <-chan int) {
+func termTracker(termUpdateSub <-chan TermUpdateSub, getTerm chan<- int, setTerm <-chan int, halt <-chan struct{}) {
 	term := 0
 	subs := []chan<- int{}
 	for {
@@ -213,6 +213,9 @@ func termTracker(termUpdateSub <-chan TermUpdateSub, getTerm chan<- int, setTerm
 					close(s)
 				}
 			}()
+		case <-halt:
+			close(getTerm)
+			return
 		}
 	}
 }
@@ -475,7 +478,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	go voter(rf.term, voteRequests, rf.killed)
-	go termTracker(termUpdateSub, term, setTerm)
+	go termTracker(termUpdateSub, term, setTerm, rf.killed)
 	go rf.follower()
 	return rf
 }
