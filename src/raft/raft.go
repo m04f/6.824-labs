@@ -87,6 +87,14 @@ func (rf *Raft) GetState() (int, bool) {
 	return <-rf.term, rf.isLeader.Load()
 }
 
+func (rf *Raft) goForEachPeer(f func(*labrpc.ClientEnd)) {
+	for i, peer := range rf.peers {
+		if i != rf.me {
+			go f(peer)
+		}
+	}
+}
+
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
@@ -145,7 +153,6 @@ type RequestVoteArgs struct {
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
-	// Your data here (3A).
 	Term        int
 	VoteGranted bool
 }
@@ -162,6 +169,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = <-rf.term
 }
 
+func (rf *Raft) CallRequestVote(peer *labrpc.ClientEnd, args RequestVoteArgs) bool {
+	var reply RequestVoteReply
+	if ok := peer.Call("Raft.RequestVote", &args, &reply); ok {
+		if reply.Term > args.Term {
+			rf.setTerm <- reply.Term
+		}
+	}
+	return reply.VoteGranted
+}
+
 type AppendEntriesArgs struct {
 	Term int
 }
@@ -176,6 +193,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.heartBeats <- args.Term
 	}
 	reply.Term = max(args.Term, term)
+}
+
+func (rf *Raft) CallAppendEntries(peer *labrpc.ClientEnd, args AppendEntriesArgs) {
+	var reply AppendEntriesReply
+	if ok := peer.Call("Raft.AppendEntries", &args, &reply); ok {
+		if reply.Term > args.Term {
+			rf.setTerm <- reply.Term
+		}
+	}
 }
 
 type LogEntry struct {

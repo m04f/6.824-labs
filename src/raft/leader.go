@@ -7,22 +7,16 @@ import (
 	"6.5840/labrpc"
 )
 
-func (rf *Raft) sendHeartBeats(ctx context.Context, peer *labrpc.ClientEnd, term int) {
-	sendHB := func() {
-		var reply AppendEntriesReply
-		if ok := peer.Call("Raft.AppendEntries", &AppendEntriesArgs{term}, &reply); ok {
-			if reply.Term > term {
-				rf.setTerm <- reply.Term
+func (rf *Raft) sendPeriodicHeartBeats(ctx context.Context, term int) func(peer *labrpc.ClientEnd) {
+	return func(peer *labrpc.ClientEnd) {
+		go rf.CallAppendEntries(peer, AppendEntriesArgs{term})
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Millisecond * heartBeatDelay):
+				go rf.CallAppendEntries(peer, AppendEntriesArgs{term})
 			}
-		}
-	}
-	go sendHB()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(time.Millisecond * heartBeatDelay):
-			go sendHB()
 		}
 	}
 }
@@ -30,15 +24,8 @@ func (rf *Raft) sendHeartBeats(ctx context.Context, peer *labrpc.ClientEnd, term
 func (rf *Raft) leader(ctx context.Context, term int) state {
 	rf.isLeader.Store(true)
 	defer rf.isLeader.Store(false)
-
-	// start heartbeat go-routines
 	childCtx, _ := rf.onTermChange(ctx, term)
-	for i, peer := range rf.peers {
-		if i == rf.me {
-			continue
-		}
-		go rf.sendHeartBeats(childCtx, peer, term)
-	}
+	rf.goForEachPeer(rf.sendPeriodicHeartBeats(childCtx, term))
 	<-childCtx.Done()
 	return rf.follower
 }

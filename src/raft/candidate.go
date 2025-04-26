@@ -2,26 +2,14 @@ package raft
 
 import (
 	"context"
-	"time"
 
 	"6.5840/labrpc"
 )
 
-func (rf *Raft) sendRequestVote(ctx context.Context, peer *labrpc.ClientEnd, term int, voteGranted chan<- bool) {
-	args := RequestVoteArgs{term, rf.me}
-	reply := RequestVoteReply{}
-	ok := peer.Call("Raft.RequestVote", &args, &reply)
-	if ok {
-		voteGranted <- reply.VoteGranted
-		rf.setTerm <- reply.Term
-		return
-	}
-	select {
-	case <-ctx.Done():
-		voteGranted <- false
-		return
-	case <-time.After(time.Millisecond * 5):
-		rf.sendRequestVote(ctx, peer, term, voteGranted)
+func (rf *Raft) sendRequestVote(_ context.Context, term int, voteGranted chan<- bool) func(peer *labrpc.ClientEnd) {
+	return func(peer *labrpc.ClientEnd) {
+		args := RequestVoteArgs{term, rf.me}
+		voteGranted <- rf.CallRequestVote(peer, args)
 	}
 }
 
@@ -74,12 +62,7 @@ func (rf *Raft) candidate(ctx context.Context, term int) state {
 		}
 	}()
 
-	for i, peer := range rf.peers {
-		if i == rf.me {
-			continue
-		}
-		go rf.sendRequestVote(childCtx, peer, term, votes)
-	}
+	rf.goForEachPeer(rf.sendRequestVote(childCtx, term, votes))
 
 	select {
 	case <-promote:
