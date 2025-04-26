@@ -384,8 +384,7 @@ func (rf *Raft) leader(term int) {
 }
 
 func (rf *Raft) halt() {
-	time.Sleep(time.Second)
-	rf.halt()
+	return
 }
 
 func voter(term <-chan int, requests <-chan VoteRequest, halt <-chan struct{}) {
