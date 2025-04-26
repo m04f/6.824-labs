@@ -44,32 +44,21 @@ func (rf *Raft) candidate(ctx context.Context, term int) state {
 	votes := make(chan bool)
 
 	go rf.voteCollector(term, votes, promote)
-
-	childCtx, cancel := rf.onTermChange(ctx, term)
-
-	// track new leaders
-	go func() {
-		for {
-			select {
-			case <-childCtx.Done():
-				return
-			case hbTerm := <-rf.heartBeats:
-				if hbTerm >= term {
-					cancel()
-					return
-				}
-			}
-		}
-	}()
-
+	childCtx, _ := rf.onTermChange(ctx, term)
 	rf.goForEachPeer(rf.sendRequestVote(childCtx, term, votes))
 
-	select {
-	case <-promote:
-		return func(ctx context.Context) state { return rf.leader(ctx, term) }
-	case <-childCtx.Done():
-		return rf.follower
-	case <-rf.electionTimeout():
-		return func(ctx context.Context) state { return rf.candidate(ctx, term+1) }
+	for {
+		select {
+		case <-promote:
+			return func(ctx context.Context) state { return rf.leader(ctx, term) }
+		case <-childCtx.Done():
+			return rf.follower
+		case <-rf.electionTimeout():
+			return func(ctx context.Context) state { return rf.candidate(ctx, term+1) }
+		case hbTerm := <-rf.heartBeats:
+			if hbTerm >= term {
+				return rf.follower
+			}
+		}
 	}
 }
