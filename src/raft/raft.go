@@ -229,14 +229,16 @@ func (rf *Raft) electionTimeout() <-chan time.Time {
 	return time.After(time.Millisecond * time.Duration(ms))
 }
 
-func (rf *Raft) follower() {
+type state func() state
+
+func (rf *Raft) follower() state {
 	select {
 	case <-rf.heartBeats:
-		go rf.follower()
+		return rf.follower
 	case <-rf.killed:
-		go rf.halt()
+		return rf.halt
 	case <-rf.electionTimeout():
-		go rf.candidate(<-rf.term + 1)
+		return func() state { return rf.candidate(<-rf.term + 1) }
 	}
 }
 
@@ -292,7 +294,7 @@ func (rf *Raft) voteCollector(term int, votes chan bool, promote chan<- struct{}
 	}
 }
 
-func (rf *Raft) candidate(term int) {
+func (rf *Raft) candidate(term int) state {
 
 	rf.setTerm <- term
 	demote := make(chan struct{})
@@ -328,13 +330,13 @@ func (rf *Raft) candidate(term int) {
 
 	select {
 	case <-demote:
-		go rf.follower()
+		return rf.follower
 	case <-promote:
-		go rf.leader(term)
+		return func() state { return rf.leader(term) }
 	case <-rf.killed:
-		go rf.halt()
+		return rf.halt
 	case <-rf.electionTimeout():
-		go rf.candidate(term + 1)
+		return func() state { return rf.candidate(term + 1) }
 	}
 }
 
@@ -360,7 +362,7 @@ func (rf *Raft) sendHeartBeats(demoted <-chan struct{}, peer *labrpc.ClientEnd, 
 	}
 }
 
-func (rf *Raft) leader(term int) {
+func (rf *Raft) leader(term int) state {
 	demote := make(chan struct{})
 	rf.isLeader.Store(true)
 
@@ -376,15 +378,15 @@ func (rf *Raft) leader(term int) {
 	select {
 	case <-rf.killed:
 		rf.isLeader.Store(false)
-		go rf.halt()
+		return rf.halt
 	case <-demote:
 		rf.isLeader.Store(false)
-		go rf.follower()
+		return rf.follower
 	}
 }
 
-func (rf *Raft) halt() {
-	return
+func (rf *Raft) halt() state {
+	return nil
 }
 
 func voter(term <-chan int, requests <-chan VoteRequest, halt <-chan struct{}) {
@@ -478,6 +480,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	go voter(rf.term, voteRequests, rf.killed)
 	go termTracker(termUpdateSub, term, setTerm, rf.killed)
-	go rf.follower()
+	go func() {
+		state := rf.follower
+		for state != nil {
+			state = state()
+		}
+	}()
 	return rf
 }
