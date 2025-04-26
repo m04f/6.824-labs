@@ -19,8 +19,8 @@ package raft
 
 import (
 	//	"bytes"
+	"context"
 	"fmt"
-	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -74,8 +74,8 @@ type Raft struct {
 	term          <-chan int
 	setTerm       chan<- int
 	termUpdateSub chan<- TermUpdateSub
-	killed        chan struct{}
 	voteRequests  chan<- VoteRequest
+	kill          context.CancelFunc
 	isLeader      atomic.Bool
 
 	heartBeats chan int
@@ -187,7 +187,7 @@ type TermUpdateSub struct {
 	firstTerm int
 }
 
-func termTracker(termUpdateSub <-chan TermUpdateSub, getTerm chan<- int, setTerm <-chan int, halt <-chan struct{}) {
+func termTracker(ctx context.Context, termUpdateSub <-chan TermUpdateSub, getTerm chan<- int, setTerm <-chan int) {
 	term := 0
 	subs := []chan<- int{}
 	for {
@@ -213,7 +213,7 @@ func termTracker(termUpdateSub <-chan TermUpdateSub, getTerm chan<- int, setTerm
 					close(s)
 				}
 			}()
-		case <-halt:
+		case <-ctx.Done():
 			close(getTerm)
 			return
 		}
@@ -229,195 +229,17 @@ func (rf *Raft) electionTimeout() <-chan time.Time {
 	return time.After(time.Millisecond * time.Duration(ms))
 }
 
-type state func() state
+type state func(context.Context) state
 
-func (rf *Raft) follower() state {
-	select {
-	case <-rf.heartBeats:
-		return rf.follower
-	case <-rf.killed:
-		return rf.halt
-	case <-rf.electionTimeout():
-		return func() state { return rf.candidate(<-rf.term + 1) }
-	}
-}
-
-func (rf *Raft) onTermChangeFunc(term int, f func()) {
-	termChanged := make(chan int)
-	rf.termUpdateSub <- TermUpdateSub{termChanged, term}
-	<-termChanged
-	f()
-}
-
-func (rf *Raft) sendRequestVote(peer *labrpc.ClientEnd, term int, voteGranted chan<- bool, stop <-chan struct{}) {
-	args := RequestVoteArgs{term, rf.me}
-	reply := RequestVoteReply{}
-	ok := peer.Call("Raft.RequestVote", &args, &reply)
-	if ok {
-		voteGranted <- reply.VoteGranted
-		rf.setTerm <- reply.Term
-		return
-	}
-	select {
-	case <-stop:
-		voteGranted <- false
-		return
-	case <-rf.killed:
-		voteGranted <- false
-		return
-	case <-time.After(time.Millisecond * 5):
-		rf.sendRequestVote(peer, term, voteGranted, stop)
-	}
-}
-
-func (rf *Raft) voteCollector(term int, votes chan bool, promote chan<- struct{}) {
-	votesGranted := 0
-	votesReceived := 0
-	requestedFromSelf := false
-	promoted := false
-	for voteGranted := range votes {
-		votesReceived++
-		if votesReceived == len(rf.peers) {
-			close(votes)
-		}
-		if voteGranted {
-			votesGranted++
-		}
-		if votesGranted == len(rf.peers)/2 && !requestedFromSelf {
-			requestedFromSelf = true
-			rf.voteRequests <- VoteRequest{term, rf.me, votes}
-		}
-		if votesGranted > len(rf.peers)/2 && !promoted {
-			promoted = true
-			close(promote)
-		}
-	}
-}
-
-func (rf *Raft) candidate(term int) state {
-
-	rf.setTerm <- term
-	demote := make(chan struct{})
-	closeDemote := sync.OnceFunc(func() { close(demote) })
-	promote := make(chan struct{})
-	votes := make(chan bool)
-
-	go rf.voteCollector(term, votes, promote)
-
-	go rf.onTermChangeFunc(term, closeDemote)
-
-	// track new leaders
+func (rf *Raft) onTermChange(ctx context.Context, term int) (context.Context, context.CancelFunc) {
+	c, cancel := context.WithCancel(ctx)
 	go func() {
-		for {
-			select {
-			case <-demote:
-				return
-			case hbTerm := <-rf.heartBeats:
-				if hbTerm >= term {
-					closeDemote()
-					return
-				}
-			}
-		}
+		termChanged := make(chan int)
+		rf.termUpdateSub <- TermUpdateSub{termChanged, term}
+		<-termChanged
+		cancel()
 	}()
-
-	for i, peer := range rf.peers {
-		if i == rf.me {
-			continue
-		}
-		go rf.sendRequestVote(peer, term, votes, demote)
-	}
-
-	select {
-	case <-demote:
-		return rf.follower
-	case <-promote:
-		return func() state { return rf.leader(term) }
-	case <-rf.killed:
-		return rf.halt
-	case <-rf.electionTimeout():
-		return func() state { return rf.candidate(term + 1) }
-	}
-}
-
-func (rf *Raft) sendHeartBeats(demoted <-chan struct{}, peer *labrpc.ClientEnd, term int) {
-	sendHB := func() {
-		var reply AppendEntriesReply
-		if ok := peer.Call("Raft.AppendEntries", &AppendEntriesArgs{term}, &reply); ok {
-			if reply.Term > term {
-				rf.setTerm <- reply.Term
-			}
-		}
-	}
-	go sendHB()
-	for {
-		select {
-		case <-demoted:
-			return
-		case <-rf.killed:
-			return
-		case <-time.After(time.Millisecond * heartBeatDelay):
-			go sendHB()
-		}
-	}
-}
-
-func (rf *Raft) leader(term int) state {
-	demote := make(chan struct{})
-	rf.isLeader.Store(true)
-
-	go rf.onTermChangeFunc(term, func() { close(demote) })
-
-	// start heartbeat go-routines
-	for i, peer := range rf.peers {
-		if i == rf.me {
-			continue
-		}
-		go rf.sendHeartBeats(demote, peer, term)
-	}
-	select {
-	case <-rf.killed:
-		rf.isLeader.Store(false)
-		return rf.halt
-	case <-demote:
-		rf.isLeader.Store(false)
-		return rf.follower
-	}
-}
-
-func (rf *Raft) halt() state {
-	return nil
-}
-
-func voter(term <-chan int, requests <-chan VoteRequest, halt <-chan struct{}) {
-	votedFor := -1
-	lastTerm := 0
-	for {
-		select {
-		case request := <-requests:
-			curTerm := <-term
-			if curTerm > lastTerm {
-				lastTerm = curTerm
-				votedFor = -1
-			}
-			if request.term < curTerm {
-				request.granted <- false
-			} else if request.term == curTerm {
-				if votedFor == -1 {
-					votedFor = request.id
-					request.granted <- true
-				} else if votedFor == request.id {
-					log.Panicln("internal error")
-				} else {
-					request.granted <- false
-				}
-			} else if request.term > curTerm {
-				log.Panicln("internal error!")
-			}
-		case <-halt:
-			return
-		}
-	}
+	return c, cancel
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -443,7 +265,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 }
 
 func (rf *Raft) Kill() {
-	close(rf.killed)
+	rf.kill()
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -472,18 +294,24 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.voteRequests = voteRequests
 	setTerm := make(chan int)
 	rf.setTerm = setTerm
-	rf.killed = make(chan struct{})
 	rf.heartBeats = make(chan int)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	go voter(rf.term, voteRequests, rf.killed)
-	go termTracker(termUpdateSub, term, setTerm, rf.killed)
+	ctx, cancel := context.WithCancel(context.Background())
+	rf.kill = cancel
+	go voter(ctx, rf.term, voteRequests)
+	go termTracker(ctx, termUpdateSub, term, setTerm)
 	go func() {
 		state := rf.follower
-		for state != nil {
-			state = state()
+		for {
+			select {
+			case <-ctx.Done():
+				break
+			default:
+				state = state(ctx)
+			}
 		}
 	}()
 	return rf
