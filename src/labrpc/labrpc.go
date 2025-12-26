@@ -49,20 +49,17 @@ package labrpc
 //   pass svc to srv.AddService()
 //
 
-import "6.5840/labgob"
-import "bytes"
-import "reflect"
-import "sync"
-import "log"
-import "strings"
-import "math/rand"
-import "time"
-import "sync/atomic"
+import (
+	"bytes"
+	"log"
+	"math/rand"
+	"reflect"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
-const (
-	SHORTDELAY = 27   // ms
-	LONGDELAY  = 7000 // ms
-	MAXDELAY   = LONGDELAY + 100
+	"6.5840/labgob"
 )
 
 type reqMsg struct {
@@ -182,9 +179,6 @@ func (rn *Network) Reliable(yes bool) {
 }
 
 func (rn *Network) IsReliable() bool {
-	rn.mu.Lock()
-	defer rn.mu.Unlock()
-
 	return rn.reliable
 }
 
@@ -241,7 +235,7 @@ func (rn *Network) processReq(req reqMsg) {
 	if enabled && servername != nil && server != nil {
 		if reliable == false {
 			// short delay
-			ms := (rand.Int() % SHORTDELAY)
+			ms := (rand.Int() % 27)
 			time.Sleep(time.Duration(ms) * time.Millisecond)
 		}
 
@@ -315,7 +309,7 @@ func (rn *Network) processReq(req reqMsg) {
 		if rn.IsLongDelays() {
 			// let Raft tests check that leader doesn't send
 			// RPCs synchronously.
-			ms = (rand.Int() % LONGDELAY)
+			ms = (rand.Int() % 7000)
 		} else {
 			// many kv tests require the client to try each
 			// server in fairly rapid succession.

@@ -16,6 +16,7 @@ import (
 	"6.5840/labrpc"
 	"6.5840/shardkv1/shardcfg"
 	"6.5840/shardkv1/shardctrler"
+	"6.5840/shardkv1/shardctrler/param"
 	"6.5840/shardkv1/shardgrp"
 	"6.5840/tester1"
 )
@@ -390,6 +391,51 @@ func (ts *Test) concurCtrler(ck kvtest.IKVClerk, ka, va []string) {
 		ch <- struct{}{}
 	}
 
+	for i := 0; i < len(ka); i++ {
+		ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1))
+	}
+
+}
+
+func (ts *Test) electCtrler(ck kvtest.IKVClerk, ka, va []string) {
+	const (
+		NSEC = 5
+		N    = 4
+	)
+
+	ch := make(chan struct{})
+	f := func(ch chan struct{}, i int) {
+		for true {
+			select {
+			case <-ch:
+				return
+			default:
+				ngid := ts.newGid()
+				sck := ts.makeShardCtrler()
+				sck.InitController()
+				//log.Printf("%d(%p): join/leave %v", i, sck, ngid)
+				ts.joinGroups(sck, []tester.Tgid{ngid})
+				if ok := ts.checkMember(sck, ngid); ok {
+					if ok := ts.leaveGroups(sck, []tester.Tgid{ngid}); !ok {
+						log.Fatalf("electCtrler: %d(%p): leave %v failed", i, sck, ngid)
+					}
+				} else {
+					log.Fatalf("electCtrler: %d(%p): join %v failed", i, sck, ngid)
+				}
+				sck.ExitController()
+			}
+		}
+	}
+	for i := 0; i < N; i++ {
+		go f(ch, i)
+	}
+
+	// let f()'s run for a while
+	time.Sleep(NSEC * time.Second)
+
+	for i := 0; i < N; i++ {
+		ch <- struct{}{}
+	}
 	for i := 0; i < len(ka); i++ {
 		ts.CheckGet(ck, ka[i], va[i], rpc.Tversion(1))
 	}
