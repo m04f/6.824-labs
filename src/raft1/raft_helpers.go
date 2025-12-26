@@ -21,18 +21,18 @@ func (rf *Raft) isLeader() bool {
 	return rf.votedFor == rf.me
 }
 
-func (rf *Raft) callRequestVote(server *labrpc.ClientEnd, reply *RequestVoteReply) bool {
+func (rf *Raft) callRequestVote(server *labrpc.ClientEnd, term int, reply *RequestVoteReply) bool {
 	args := &RequestVoteArgs{
-		Term:        rf.term,
+		Term:        term,
 		CandidateId: rf.me,
 	}
 	ok := server.Call("Raft.RequestVote", args, reply)
 	return ok
 }
 
-func (rf *Raft) callAppendEntries(server *labrpc.ClientEnd, reply *AppendEntriesReply) bool {
+func (rf *Raft) callAppendEntries(server *labrpc.ClientEnd, term int, reply *AppendEntriesReply) bool {
 	args := &AppendEntriesArgs{
-		Term:     rf.term,
+		Term:     term,
 		LeaderId: rf.me,
 	}
 	ok := server.Call("Raft.AppendEntries", args, reply)

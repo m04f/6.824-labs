@@ -93,9 +93,9 @@ func (rf *Raft) CandidateCoroutine() {
 
 					go func() {
 						reply := &RequestVoteReply{}
-						rf.callRequestVote(peer, reply)
+						rf.callRequestVote(peer, term, reply)
 						if reply.Term > term {
-							terms <- term
+							terms <- reply.Term
 							return
 						}
 						if reply.VoteGranted {

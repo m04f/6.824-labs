@@ -17,7 +17,7 @@ func (rf *Raft) sendHbs(terms chan int) {
 		}
 		go func() {
 			reply := &AppendEntriesReply{}
-			rf.callAppendEntries(peer, reply)
+			rf.callAppendEntries(peer, term, reply)
 			if reply.Term > term {
 				terms <- reply.Term
 			}

@@ -45,7 +45,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	term, updated := rf.checkTerm(args.Term)
 	reply.Term = term
-	if updated || rf.votedFor == args.CandidateId {
+	if updated || rf.votedFor == args.CandidateId || rf.votedFor == -1 {
 		rf.votedFor = args.CandidateId
 		reply.VoteGranted = true
 		return
